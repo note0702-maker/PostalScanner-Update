@@ -1,7 +1,7 @@
 {
-  "version": "2.0.10",
-  "package_url": "https://github.com/note0702-maker/PostalScanner-Update/releases/download/v2.0.10/PostalScanner_2.0.10.zip",
-  "sha256": "da4676186391899c86ad67f6a2e10f9f633f17414a2d7fc2658c077985501408",
+  "version": "2.0.11",
+  "package_url": "https://github.com/note0702-maker/PostalScanner-Update/releases/download/v2.0.11/PostalScanner_2.0.11.zip",
+  "sha256": "a301f22e1bc230b6f855ca84eeaac83dd5647c9e1b2b97191220098c18a3d7d3",
   "mandatory": false,
-  "message": "운영 안정화 · 시작 자가점검 · 비식별 예외 보호"
+  "message": "2.0.11 운영 안정화 및 시스템 점검 추가"
 }
