@@ -1,7 +1,7 @@
 {
-  "version": "2.0.9",
-  "package_url": "https://github.com/note0702-maker/PostalScanner-Update/releases/download/v2.0.9/PostalScanner_2.0.9.zip",
-  "sha256": "647a522a5acf262c2779a402e89c9b66d8de188dfc4512ac0dc3432e27a3774c",
+  "version": "2.0.10",
+  "package_url": "https://github.com/note0702-maker/PostalScanner-Update/releases/download/v2.0.10/PostalScanner_2.0.10.zip",
+  "sha256": "da4676186391899c86ad67f6a2e10f9f633f17414a2d7fc2658c077985501408",
   "mandatory": false,
-  "message": "비식별 운영통계 추가 · 처리건수/수동수정/OpenAI 호출/재시도/fallback/토큰/평균 인식시간"
+  "message": "운영 안정화 · 시작 자가점검 · 비식별 예외 보호"
 }
