@@ -1,7 +1,7 @@
 {
-  "version": "2.0.8",
-  "package_url": "https://github.com/note0702-maker/PostalScanner-Update/releases/download/v2.0.8/PostalScanner_2.0.8.zip",
-  "sha256": "7fe3dba63f553f49ebed1200149442088d76fb6be08748da9d373f951cd2df2d",
+  "version": "2.0.9",
+  "package_url": "https://github.com/note0702-maker/PostalScanner-Update/releases/download/v2.0.9/PostalScanner_2.0.9.zip",
+  "sha256": "647a522a5acf262c2779a402e89c9b66d8de188dfc4512ac0dc3432e27a3774c",
   "mandatory": false,
-  "message": "자동업데이트 안정화: 실패 원인 표시, 안전 로그, GitHub 확인 방식 개선"
+  "message": "비식별 운영통계 추가 · 처리건수/수동수정/OpenAI 호출/재시도/fallback/토큰/평균 인식시간"
 }
