@@ -1,7 +1,7 @@
 {
-  "version": "2.1.6",
-  "package_url": "https://github.com/note0702-maker/PostalScanner-Update/releases/download/v2.1.6/PostalScanner_2.1.6.zip",
-  "sha256": "d62f61c4351d25bf8648a6453b4933ec7435447af62147723a7d82af06a251a8",
+  "version": "2.1.5",
+  "package_url": "https://github.com/note0702-maker/PostalScanner-Update/releases/download/v2.1.5/PostalScanner_2.1.5.zip",
+  "sha256": "82efa1a5fa11bae7b0ca715e98f8c1e2fdb748fd16283be894f1f906f738ebad",
   "mandatory": false,
-  "message": "PostalScanner 2.1.6 · 업데이트 진행창 실동작 검증"
+  "message": "PostalScanner 2.1.5 · 안정 버전으로 임시 롤백"
 }
