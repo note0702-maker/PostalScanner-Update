@@ -10,16 +10,17 @@ def test_version_and_persistent_data_root():
     s = _source()
     assert 'APP_VERSION = "2.2.1"' in s
     assert 'LOCALAPPDATA' in s
-    assert 'PERSISTENT_ROOT' in s
+    assert 'PERSISTENT_ROOT = get_persistent_root()' in s
     assert 'DATA_DIR = PERSISTENT_ROOT / "data"' in s
 
 
 def test_legacy_migration_is_copy_only():
     s = _source()
     tree = ast.parse(s)
-    fn = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'migrate_legacy_data_layout')
+    fn = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == '_copy_legacy_data_once')
     segment = ast.get_source_segment(s, fn) or ''
     assert 'shutil.copytree' in segment
+    assert 'dirs_exist_ok=True' in segment
     assert 'shutil.copy2' in segment
     assert 'shutil.move' not in segment
     assert '.unlink(' not in segment
