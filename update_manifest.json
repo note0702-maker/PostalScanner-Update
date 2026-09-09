@@ -1,7 +1,7 @@
 {
-  "version": "2.1.4",
-  "package_url": "https://github.com/note0702-maker/PostalScanner-Update/releases/download/v2.1.4/PostalScanner_2.1.4.zip",
-  "sha256": "10b52546ddf8b40d4cac8c892a304007cd0a38e2624608327bc286cc48dd339c",
+  "version": "2.1.5",
+  "package_url": "https://github.com/note0702-maker/PostalScanner-Update/releases/download/v2.1.5/PostalScanner_2.1.5.zip",
+  "sha256": "82efa1a5fa11bae7b0ca715e98f8c1e2fdb748fd16283be894f1f906f738ebad",
   "mandatory": false,
-  "message": "PostalScanner 2.1.4 · 자동업데이트 종료 안정화 / EXE 전용 설치"
+  "message": "PostalScanner 2.1.5 · 업데이트 진행창 / 다운로드 %·MB / 설치 단계 표시"
 }
