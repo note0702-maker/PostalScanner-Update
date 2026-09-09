@@ -1,0 +1,43 @@
+name: Inspect 2.2.0 Final Source
+
+on:
+  push:
+    branches: [dev/2.2.1-work]
+    paths: [".github/workflows/inspect_220_source.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconstruct and inspect
+        shell: bash
+        run: |
+          cat source_final/PostalScanner.py.gz.b64.part* | tr -d '\r\n' | base64 -d > /tmp/ps.gz
+          gzip -dc /tmp/ps.gz > /tmp/PostalScanner.py
+          python - <<'PY'
+          from pathlib import Path
+          import ast
+          s=Path('/tmp/PostalScanner.py').read_text(encoding='utf-8')
+          t=ast.parse(s)
+          for node in t.body:
+              if isinstance(node,(ast.Assign,ast.AnnAssign)):
+                  names=[]
+                  if isinstance(node,ast.Assign):
+                      names=[x.id for x in node.targets if isinstance(x,ast.Name)]
+                  elif isinstance(node.target,ast.Name):
+                      names=[node.target.id]
+                  if any(n in {'APP_VERSION','BASE_DIR','PERSISTENT_ROOT','DATA_DIR','ORIGINAL_DIR','OUTPUT_DIR','AUDIT_DIR','OPENAI_SECURE_KEY_FILE'} for n in names):
+                      print('ASSIGN', node.lineno, ast.get_source_segment(s,node))
+              if isinstance(node,ast.FunctionDef):
+                  seg=ast.get_source_segment(s,node) or ''
+                  low=node.name.lower()
+                  if any(k in low for k in ('legacy','migr','import','data')) or 'shutil.move' in seg or 'shutil.copytree' in seg:
+                      print('FUNC',node.lineno,node.name,'move=', 'shutil.move' in seg,'copytree=', 'shutil.copytree' in seg,'copy2=', 'shutil.copy2' in seg)
+          print('SHUTIL_MOVE_COUNT',s.count('shutil.move('))
+          print('SHUTIL_COPYTREE_COUNT',s.count('shutil.copytree('))
+          print('SHUTIL_COPY2_COUNT',s.count('shutil.copy2('))
+          PY
