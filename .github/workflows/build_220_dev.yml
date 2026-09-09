@@ -64,7 +64,15 @@ jobs:
       - name: Phase2 source assertions
         shell: pwsh
         run: |
-          python -c "from pathlib import Path; s=Path('src/PostalScanner.py').read_text(encoding='utf-8'); assert 'DATA_DIR = BASE_DIR / \"data\"' in s; assert 'def ensure_original_excel_seed()' in s; assert 'OPENAI_CONFIG_FILE = DATA_DIR / \"openai_config.json\"' in s; print('phase2 assertions PASS')"
+          @'
+          from pathlib import Path
+          s = Path("src/PostalScanner.py").read_text(encoding="utf-8")
+          assert 'DATA_DIR = BASE_DIR / "data"' in s
+          assert 'def ensure_original_excel_seed()' in s
+          assert 'OPENAI_CONFIG_FILE = DATA_DIR / "openai_config.json"' in s
+          print("phase2 assertions PASS")
+          '@ | Set-Content .phase2_assert.py -Encoding utf8
+          python .phase2_assert.py
 
       - name: Build PostalScanner app
         shell: pwsh
