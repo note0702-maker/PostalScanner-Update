@@ -1,6 +1,11 @@
 name: PostalScanner 2.2.0 Dev Build
 
 on:
+  push:
+    branches:
+      - dev/2.2.0-openai-cleanup
+    paths:
+      - ".github/workflows/build_220_dev.yml"
   workflow_dispatch:
 
 permissions:
@@ -42,15 +47,6 @@ jobs:
           python dev/patch_cleanup.py
           python dev/patch_data.py
 
-      - name: Restore original Excel resource
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force resources | Out-Null
-          $parts = Get-ChildItem "resources/original_template.xlsx.b64.part*" | Sort-Object Name
-          if ($parts.Count -ne 4) { throw "Expected 4 template parts, found $($parts.Count)" }
-          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ""
-          [IO.File]::WriteAllBytes("resources/original_template.xlsx", [Convert]::FromBase64String($b64))
-
       - name: Static compile
         shell: pwsh
         run: |
@@ -70,8 +66,6 @@ jobs:
             --hidden-import pythoncom --hidden-import pywintypes `
             --hidden-import win32com --hidden-import win32com.client --hidden-import win32crypt `
             src/PostalScanner.py
-          New-Item -ItemType Directory -Force dist/PostalScanner/resources | Out-Null
-          Copy-Item resources/original_template.xlsx dist/PostalScanner/resources/original_template.xlsx -Force
 
       - name: Build safe updater as onedir
         shell: pwsh
@@ -86,6 +80,12 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item RELEASE_NOTES_2.2.0_DEV.txt dist/PostalScanner/RELEASE_NOTES.txt -Force
+          @'
+          PREVIEW BUILD NOTICE
+          This DEV preview intentionally does not bundle the Excel template yet.
+          For isolated testing, copy your template into data/original before Excel tests.
+          Do not replace the stable 2.1.5 installation with this preview.
+          '@ | Set-Content dist/PostalScanner/DEV_PREVIEW_NOTICE.txt -Encoding utf8
 
       - name: Package validation
         shell: pwsh
@@ -93,8 +93,7 @@ jobs:
           $required = @(
             "dist/PostalScanner/PostalScanner.exe",
             "dist/PostalScanner/_internal",
-            "dist/PostalScanner/updater/PostalScanner_Updater.exe",
-            "dist/PostalScanner/resources/original_template.xlsx"
+            "dist/PostalScanner/updater/PostalScanner_Updater.exe"
           )
           foreach ($item in $required) {
             if (-not (Test-Path $item)) { throw "Missing required package item: $item" }
