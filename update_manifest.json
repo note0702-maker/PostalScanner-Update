@@ -1,7 +1,7 @@
 {
-  "version": "2.0.11",
-  "package_url": "https://github.com/note0702-maker/PostalScanner-Update/releases/download/v2.0.11/PostalScanner_2.0.11.zip",
-  "sha256": "a301f22e1bc230b6f855ca84eeaac83dd5647c9e1b2b97191220098c18a3d7d3",
+  "version": "2.1.2",
+  "package_url": "https://github.com/note0702-maker/PostalScanner-Update/releases/download/v2.1.2/PostalScanner_2.1.2.zip",
+  "sha256": "65a983460177f1f2f5e78f92b5c2883b306a0fae0ff52ce9d70e49f2122167d8",
   "mandatory": false,
-  "message": "2.0.11 운영 안정화 및 시스템 점검 추가"
+  "message": "PostalScanner 2.1.2 · 재촬영 Space / Excel 취소 안정화 / 자동업데이트"
 }
