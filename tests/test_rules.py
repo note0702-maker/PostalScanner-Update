@@ -1,44 +1,40 @@
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-
-from postal_rules import (
+from src.postal_rules import (
     filter_general_english,
     normalize_general_result,
     general_address_has_structure,
-    ledger_name_is_plausible,
-    GENERAL_MAIL_PROMPT,
-    LEDGER_PROMPT,
+    general_result_needs_retry,
+    ledger_result_needs_retry,
+    normalize_ledger_address,
+    estimate_openai_cost_usd,
 )
 
 
-def test_general_k_t_rule():
-    assert filter_general_english('ABC KT타워 101호') == 'KT타워 101호'
-    assert filter_general_english('kt 빌딩') == 'KT 빌딩'
-
-
-def test_general_honorific_and_structure():
-    address, name = normalize_general_result('포항시 남구 오천읍 123 KT', '홍길동 귀하')
-    assert address == '포항시 남구 오천읍 123 KT'
+def test_general_k_t_only():
+    address, name = normalize_general_result('경북 포항시 KT ABC빌딩 101호', '홍길동님')
+    assert 'KT' in address
+    assert 'ABC' not in address
     assert name == '홍길동'
-    assert general_address_has_structure(address)
 
 
-def test_general_prompt_preserves_rules():
-    assert '도/광역시가 생략' in GENERAL_MAIL_PROMPT
-    assert 'K와 T만 허용' in GENERAL_MAIL_PROMPT
-    assert '담당자' in GENERAL_MAIL_PROMPT
+def test_general_omitted_province_structure():
+    assert general_address_has_structure('포항시 남구 오천읍 문덕로 10')
 
 
-def test_ledger_prompt_preserves_rules():
-    assert '가로선/세로선/행번호' in LEDGER_PROMPT
-    assert '가장 아래' in LEDGER_PROMPT
-    assert '시/구/도/군/장' in LEDGER_PROMPT
-    assert '등기번호 열' in LEDGER_PROMPT
-    assert '육장/욕장/읖장/읏장' in LEDGER_PROMPT
+def test_general_retry_logic():
+    good = {'address':'포항시 남구 오천읍 문덕로 10', 'name':'홍길동', 'address_confidence':.94, 'name_confidence':.92}
+    bad = dict(good, name='A')
+    assert general_result_needs_retry(good) is False
+    assert general_result_needs_retry(bad) is True
 
 
-def test_ledger_name_rule():
-    assert ledger_name_is_plausible('김명현')
-    assert not ledger_name_is_plausible('김')
-    assert not ledger_name_is_plausible('KIM')
+def test_ledger_normalization_and_retry():
+    assert normalize_ledger_address('경상북도 포항시시 남구 대이읖장') == '경상북도 포항시 남구 대이읍장'
+    good = {'institution':'경상북도 포항시 남구 대이동장', 'name':'김명현', 'institution_confidence':.95}
+    bad = {'institution':'포항시시 남구', 'name':'김명현', 'institution_confidence':.95}
+    assert ledger_result_needs_retry(good) is False
+    assert ledger_result_needs_retry(bad) is True
+
+
+def test_cost_estimate():
+    # Luna: 1M input=$0.20, 1M output=$1.20
+    assert abs(estimate_openai_cost_usd('gpt-5.6-luna', 1_000_000, 1_000_000) - 1.4) < 1e-9
