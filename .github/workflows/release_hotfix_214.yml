@@ -1,0 +1,196 @@
+name: PostalScanner 2.1.4 Hotfix Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/release_hotfix_214.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Reconstruct source
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem "source/PostalScanner.py.gz.b64.part*" | Sort-Object Name
+          if ($parts.Count -ne 5) { throw "Expected 5 PostalScanner source parts, found $($parts.Count)" }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ""
+          [IO.File]::WriteAllBytes("PostalScanner.py.gz", [Convert]::FromBase64String($b64))
+          python -c "import gzip, pathlib; pathlib.Path('PostalScanner.py').write_bytes(gzip.decompress(pathlib.Path('PostalScanner.py.gz').read_bytes()))"
+
+      - name: Apply 2.1.4 hotfix
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+
+          p = Path("PostalScanner.py")
+          s = p.read_text(encoding="utf-8")
+
+          if 'APP_VERSION = "2.1.2"' not in s:
+              raise SystemExit("Expected APP_VERSION 2.1.2 source")
+
+          s = s.replace('PostalScanner 2.1.0', 'PostalScanner 2.1.4', 1)
+          s = s.replace('APP_VERSION = "2.1.2"', 'APP_VERSION = "2.1.4"', 1)
+
+          marker = 'UPDATE_USER_AGENT = f"PostalScanner-Updater-Check/{APP_VERSION}"'
+          if 'DEFAULT_UPDATE_MANIFEST_URL' not in s:
+              s = s.replace(
+                  marker,
+                  marker + '\nDEFAULT_UPDATE_MANIFEST_URL = "https://raw.githubusercontent.com/note0702-maker/PostalScanner-Update/main/update_manifest.json"',
+                  1,
+              )
+
+          s = s.replace(
+              'return {"enabled": False, "manifest_url": ""}',
+              'return {"enabled": True, "manifest_url": DEFAULT_UPDATE_MANIFEST_URL}',
+          )
+          s = s.replace(
+              'manifest_url = str(data.get("manifest_url", "")).strip()',
+              'manifest_url = str(data.get("manifest_url", "") or DEFAULT_UPDATE_MANIFEST_URL).strip()',
+              1,
+          )
+
+          # 개발용 .py 실행에서는 업데이트를 감지만 하고 설치는 막는다.
+          update_available_anchor = '''    def update_available(self, manifest):\n        self.pending_update = manifest\n        version = manifest["version"]\n'''
+          update_available_repl = '''    def update_available(self, manifest):\n        self.pending_update = manifest\n        version = manifest["version"]\n\n        if not getattr(sys, "frozen", False):\n            if hasattr(self, "update_label"):\n                self.update_label.config(\n                    text=f"업데이트: {version} 사용 가능 · EXE에서 설치",\n                    fg="#fbbf24",\n                )\n            return\n'''
+          if update_available_anchor not in s:
+              raise SystemExit("update_available anchor not found")
+          s = s.replace(update_available_anchor, update_available_repl, 1)
+
+          install_anchor = '''    def install_pending_update(self):\n        manifest = self.pending_update\n        if not manifest:\n            return\n'''
+          install_repl = '''    def install_pending_update(self):\n        manifest = self.pending_update\n        if not manifest:\n            return\n\n        if not getattr(sys, "frozen", False):\n            messagebox.showwarning(\n                "개발 실행에서는 업데이트 설치 불가",\n                "자동업데이트 설치는 PostalScanner.exe에서만 실행됩니다.\\n"\n                "현재 .py 개발 실행을 종료하고 PostalScanner.exe를 실행해주세요.",\n            )\n            return\n'''
+          if install_anchor not in s:
+              raise SystemExit("install_pending_update anchor not found")
+          s = s.replace(install_anchor, install_repl, 1)
+
+          # 종료 전에 예약된 Tk after 콜백을 모두 취소한다.
+          shutdown_anchor = '''    def shutdown_for_update(self):\n'''
+          helper = '''    def _cancel_pending_tk_after_callbacks(self):\n        try:\n            pending = self.root.tk.call("after", "info")\n            if isinstance(pending, str):\n                pending = self.root.tk.splitlist(pending)\n            for token in tuple(pending or ()):\n                try:\n                    self.root.after_cancel(token)\n                except Exception:\n                    pass\n        except Exception:\n            pass\n\n'''
+          if shutdown_anchor not in s:
+              raise SystemExit("shutdown anchor not found")
+          s = s.replace(shutdown_anchor, helper + shutdown_anchor, 1)
+
+          old_shutdown = '''        self.running = False\n        remove_session_lock()\n        release_single_instance()\n'''
+          new_shutdown = '''        self.running = False\n        try:\n            self.root.unbind_all("<KeyPress-space>")\n        except Exception:\n            pass\n        self._cancel_pending_tk_after_callbacks()\n        remove_session_lock()\n        release_single_instance()\n'''
+          if old_shutdown not in s:
+              raise SystemExit("shutdown body anchor not found")
+          s = s.replace(old_shutdown, new_shutdown, 1)
+
+          old_destroy = '''        try:\n            self.root.destroy()\n        except Exception:\n            pass\n\n    def close(self):\n'''
+          new_destroy = '''        try:\n            self.root.quit()\n        except Exception:\n            pass\n        try:\n            self.root.destroy()\n        except Exception:\n            pass\n\n    def close(self):\n'''
+          if old_destroy not in s:
+              raise SystemExit("destroy anchor not found")
+          s = s.replace(old_destroy, new_destroy, 1)
+
+          old_reschedule = '''        self.root.after(\n            30,\n            self.update_camera,\n        )\n\n    def capture_best_frame(self):\n'''
+          new_reschedule = '''        if self.running:\n            try:\n                self.root.after(\n                    30,\n                    self.update_camera,\n                )\n            except tk.TclError:\n                pass\n\n    def capture_best_frame(self):\n'''
+          if old_reschedule not in s:
+              raise SystemExit("update_camera reschedule anchor not found")
+          s = s.replace(old_reschedule, new_reschedule, 1)
+
+          p.write_text(s, encoding="utf-8")
+          '@ | python -
+
+          python -m py_compile PostalScanner.py PostalScanner_Updater.py
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller pywin32 opencv-python numpy pillow
+
+      - name: Build PostalScanner.exe
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --noupx `
+            --name PostalScanner `
+            --exclude-module paddleocr --exclude-module paddlex --exclude-module paddle `
+            --hidden-import pythoncom --hidden-import pywintypes `
+            --hidden-import win32com --hidden-import win32com.client --hidden-import win32crypt `
+            PostalScanner.py
+
+      - name: Build Updater
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onefile --noupx `
+            --name PostalScanner_Updater PostalScanner_Updater.py
+          Copy-Item dist\PostalScanner_Updater.exe dist\PostalScanner\PostalScanner_Updater.exe -Force
+          Copy-Item dist\PostalScanner_Updater.exe dist\PostalScanner\PostalScanner_Updater_next.exe -Force
+          @'
+          PostalScanner 2.1.4
+
+          - 자동업데이트 종료 시 Tkinter after 콜백 안전 취소
+          - update_camera 종료 후 재예약 방지
+          - .py 개발 실행에서는 업데이트 설치 차단
+          - 자동업데이트 설치는 PostalScanner.exe에서만 수행
+          - 공식 GitHub 업데이트 manifest 기본 주소 내장
+          '@ | Set-Content dist\PostalScanner\RELEASE_NOTES.txt -Encoding utf8
+
+      - name: Package and manifest
+        id: package
+        shell: pwsh
+        run: |
+          $v = "2.1.4"
+          $tag = "v$v"
+          $zip = "PostalScanner_$v.zip"
+          Compress-Archive -Path dist\PostalScanner -DestinationPath $zip -CompressionLevel Optimal -Force
+          $sha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          $packageUrl = "https://github.com/${{ github.repository }}/releases/download/$tag/$zip"
+          $manifest = [ordered]@{
+            version = $v
+            package_url = $packageUrl
+            sha256 = $sha
+            mandatory = $false
+            message = "PostalScanner 2.1.4 · 자동업데이트 종료 안정화 / EXE 전용 설치"
+          }
+          $manifest | ConvertTo-Json | Set-Content update_manifest.json -Encoding utf8
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v2.1.4"
+          $zip = "${{ steps.package.outputs.zip }}"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $zip --clobber
+          } else {
+            gh release create $tag $zip --target "${{ github.sha }}" --title "PostalScanner 2.1.4" --notes "Updater shutdown hotfix and EXE-only installation"
+          }
+
+      - name: Publish manifest
+        shell: pwsh
+        run: |
+          Copy-Item update_manifest.json $env:TEMP\update_manifest.json -Force
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git switch main
+          git pull --ff-only origin main
+          Copy-Item $env:TEMP\update_manifest.json .\update_manifest.json -Force
+          git add update_manifest.json
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "Update PostalScanner manifest to 2.1.4 [skip ci]"
+            git push origin main
+          }
