@@ -1,4 +1,4 @@
-name: PostalScanner 2.1.5 Progress Updater Release
+name: PostalScanner 2.1.6 Progress Updater Verification
 
 on:
   push:
@@ -35,7 +35,7 @@ jobs:
           [IO.File]::WriteAllBytes("PostalScanner.py.gz", [Convert]::FromBase64String($b64))
           python -c "import gzip, pathlib; pathlib.Path('PostalScanner.py').write_bytes(gzip.decompress(pathlib.Path('PostalScanner.py.gz').read_bytes()))"
 
-      - name: Apply 2.1.5 app patch
+      - name: Apply 2.1.6 app patch
         shell: pwsh
         run: |
           @'
@@ -47,8 +47,8 @@ jobs:
           if 'APP_VERSION = "2.1.2"' not in s:
               raise SystemExit("Expected APP_VERSION 2.1.2 source")
 
-          s = s.replace('PostalScanner 2.1.0', 'PostalScanner 2.1.5', 1)
-          s = s.replace('APP_VERSION = "2.1.2"', 'APP_VERSION = "2.1.5"', 1)
+          s = s.replace('PostalScanner 2.1.0', 'PostalScanner 2.1.6', 1)
+          s = s.replace('APP_VERSION = "2.1.2"', 'APP_VERSION = "2.1.6"', 1)
 
           marker = 'UPDATE_USER_AGENT = f"PostalScanner-Updater-Check/{APP_VERSION}"'
           if 'DEFAULT_UPDATE_MANIFEST_URL' not in s:
@@ -133,19 +133,19 @@ jobs:
           Copy-Item dist\PostalScanner_Updater.exe dist\PostalScanner\PostalScanner_Updater.exe -Force
           Copy-Item dist\PostalScanner_Updater.exe dist\PostalScanner\PostalScanner_Updater_next.exe -Force
           @'
-          PostalScanner 2.1.5
+          PostalScanner 2.1.6
 
-          - 자동업데이트 진행창 추가
+          - 자동업데이트 진행창 실동작 검증 버전
           - 다운로드 진행률 및 MB 표시
           - SHA-256 검증 / 압축 해제 / 백업 / 설치 / 재시작 단계 표시
-          - 2.1.4의 EXE 전용 업데이트 및 안전 종료 유지
+          - 2.1.5 기능 유지
           '@ | Set-Content dist\PostalScanner\RELEASE_NOTES.txt -Encoding utf8
 
       - name: Package and manifest
         id: package
         shell: pwsh
         run: |
-          $v = "2.1.5"
+          $v = "2.1.6"
           $tag = "v$v"
           $zip = "PostalScanner_$v.zip"
           Compress-Archive -Path dist\PostalScanner -DestinationPath $zip -CompressionLevel Optimal -Force
@@ -156,7 +156,7 @@ jobs:
             package_url = $packageUrl
             sha256 = $sha
             mandatory = $false
-            message = "PostalScanner 2.1.5 · 업데이트 진행창 / 다운로드 %·MB / 설치 단계 표시"
+            message = "PostalScanner 2.1.6 · 업데이트 진행창 실동작 검증"
           }
           $manifest | ConvertTo-Json | Set-Content update_manifest.json -Encoding utf8
           "zip=$zip" >> $env:GITHUB_OUTPUT
@@ -166,13 +166,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "v2.1.5"
+          $tag = "v2.1.6"
           $zip = "${{ steps.package.outputs.zip }}"
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
             gh release upload $tag $zip --clobber
           } else {
-            gh release create $tag $zip --target main --title "PostalScanner 2.1.5" --notes "Updater progress window with download percentage, size and install stages"
+            gh release create $tag $zip --target main --title "PostalScanner 2.1.6" --notes "Progress updater verification release"
           }
 
       - name: Publish manifest
@@ -188,6 +188,6 @@ jobs:
           git add update_manifest.json
           git diff --cached --quiet
           if ($LASTEXITCODE -ne 0) {
-            git commit -m "Update PostalScanner manifest to 2.1.5 [skip ci]"
+            git commit -m "Update PostalScanner manifest to 2.1.6 [skip ci]"
             git push origin main
           }
