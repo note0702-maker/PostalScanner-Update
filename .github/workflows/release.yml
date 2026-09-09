@@ -1,0 +1,146 @@
+name: PostalScanner Windows Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (blank = read APP_VERSION from source)"
+        required: false
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - "source/**"
+      - "PostalScanner_Updater.py"
+      - "RELEASE_NOTES.txt"
+      - ".github/workflows/release.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Reconstruct PostalScanner.py
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem "source/PostalScanner.py.gz.b64.part*" | Sort-Object Name
+          if ($parts.Count -ne 5) { throw "Expected 5 PostalScanner source parts, found $($parts.Count)" }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ""
+          [IO.File]::WriteAllBytes("PostalScanner.py.gz", [Convert]::FromBase64String($b64))
+          python -c "import gzip, pathlib; pathlib.Path('PostalScanner.py').write_bytes(gzip.decompress(pathlib.Path('PostalScanner.py.gz').read_bytes()))"
+          python -m py_compile PostalScanner.py PostalScanner_Updater.py
+
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          $manual = "${{ inputs.version }}".Trim()
+          if ($manual) {
+            $v = $manual.TrimStart('v')
+          } else {
+            $line = Select-String -Path "PostalScanner.py" -Pattern '^APP_VERSION\s*=\s*["'']([^"'']+)["'']' | Select-Object -First 1
+            if (-not $line) { throw "APP_VERSION not found in PostalScanner.py" }
+            $v = $line.Matches[0].Groups[1].Value.Trim()
+          }
+          if ($v -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid version: $v" }
+          $tag = "v$v"
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller pywin32 opencv-python numpy pillow
+
+      - name: Build PostalScanner.exe
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --noupx `
+            --name PostalScanner `
+            --exclude-module paddleocr --exclude-module paddlex --exclude-module paddle `
+            --hidden-import pythoncom --hidden-import pywintypes `
+            --hidden-import win32com --hidden-import win32com.client --hidden-import win32crypt `
+            PostalScanner.py
+
+      - name: Build PostalScanner_Updater.exe
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onefile --noupx `
+            --name PostalScanner_Updater PostalScanner_Updater.py
+          Copy-Item dist\PostalScanner_Updater.exe dist\PostalScanner\PostalScanner_Updater.exe -Force
+          Copy-Item dist\PostalScanner_Updater.exe dist\PostalScanner\PostalScanner_Updater_next.exe -Force
+          if (Test-Path RELEASE_NOTES.txt) {
+            Copy-Item RELEASE_NOTES.txt dist\PostalScanner\RELEASE_NOTES.txt -Force
+          }
+
+      - name: Create update ZIP and manifest
+        id: package
+        shell: pwsh
+        run: |
+          $v = "${{ steps.version.outputs.version }}"
+          $tag = "${{ steps.version.outputs.tag }}"
+          $zip = "PostalScanner_$v.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path dist\PostalScanner -DestinationPath $zip -CompressionLevel Optimal
+          $sha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          $packageUrl = "https://github.com/${{ github.repository }}/releases/download/$tag/$zip"
+          $manifest = [ordered]@{
+            version = $v
+            package_url = $packageUrl
+            sha256 = $sha
+            mandatory = $false
+            message = "PostalScanner $v · 재촬영 Space / Excel 취소 안정화 / 자동업데이트"
+          }
+          $manifest | ConvertTo-Json | Set-Content update_manifest.json -Encoding utf8
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+
+      - name: Create or update GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ steps.version.outputs.tag }}"
+          $zip = "${{ steps.package.outputs.zip }}"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $zip --clobber
+          } else {
+            if (Test-Path RELEASE_NOTES.txt) {
+              gh release create $tag $zip --target "${{ github.sha }}" --title "PostalScanner ${{ steps.version.outputs.version }}" --notes-file RELEASE_NOTES.txt
+            } else {
+              gh release create $tag $zip --target "${{ github.sha }}" --title "PostalScanner ${{ steps.version.outputs.version }}" --notes "PostalScanner update"
+            }
+          }
+
+      - name: Publish stable update_manifest.json
+        shell: pwsh
+        run: |
+          Copy-Item update_manifest.json $env:TEMP\update_manifest.json -Force
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git switch main
+          git pull --ff-only origin main
+          Copy-Item $env:TEMP\update_manifest.json .\update_manifest.json -Force
+          git add update_manifest.json
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "Update PostalScanner manifest to ${{ steps.version.outputs.version }} [skip ci]"
+            git push origin main
+          }
