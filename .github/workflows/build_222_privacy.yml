@@ -1,0 +1,201 @@
+name: PostalScanner 2.2.2 Privacy Build
+
+on:
+  push:
+    branches:
+      - dev/2.2.2-privacy
+    paths:
+      - ".github/workflows/build_222_privacy.yml"
+      - "dev/patch_221.py"
+      - "dev/patch_222_privacy.py"
+      - "source_final/**"
+      - "src/postal_rules.py"
+      - "src/PostalScanner_Updater.py"
+      - "tests/test_rules.py"
+      - "tests/test_updater.py"
+      - "tests/test_222_privacy_contract.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  privacy-build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pyinstaller pywin32 opencv-python numpy pillow
+
+      - name: Reconstruct final source
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem "source_final/PostalScanner.py.gz.b64.part*" | Sort-Object Name
+          if ($parts.Count -ne 4) { throw "Expected 4 source parts, found $($parts.Count)" }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ""
+          [IO.File]::WriteAllBytes("PostalScanner.final.py.gz", [Convert]::FromBase64String($b64))
+          python -c "import gzip, pathlib; pathlib.Path('src/PostalScanner.py').write_bytes(gzip.decompress(pathlib.Path('PostalScanner.final.py.gz').read_bytes()))"
+
+      - name: Apply production data safety patch
+        shell: pwsh
+        run: python dev/patch_221.py
+
+      - name: Apply 2.2.2 privacy patch
+        shell: pwsh
+        run: python dev/patch_222_privacy.py
+
+      - name: Static compile
+        shell: pwsh
+        run: |
+          python -m py_compile src/PostalScanner.py src/postal_rules.py src/PostalScanner_Updater.py
+
+      - name: Automated tests
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "."
+          python -m pytest -q tests/test_rules.py tests/test_updater.py tests/test_222_privacy_contract.py
+
+      - name: Privacy production assertions
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+          import ast
+          s = Path("src/PostalScanner.py").read_text(encoding="utf-8")
+          required = [
+              'APP_VERSION = "2.2.2"',
+              'PRIVACY_MODE = True',
+              'PRIVACY_MAX_EXTERNAL_RATIO_GENERAL = 0.62',
+              'PRIVACY_MAX_EXTERNAL_RATIO_LEDGER = 0.58',
+              '"store": False',
+              'LOCALAPPDATA',
+              'DATA_DIR = PERSISTENT_ROOT / "data"',
+              'duplicate_calls_avoided',
+              'def ensure_original_excel_seed(',
+          ]
+          missing = [x for x in required if x not in s]
+          if missing:
+              raise SystemExit("Missing privacy production features: " + repr(missing))
+          tree = ast.parse(s)
+          def fn(name):
+              return next(x for x in tree.body if isinstance(x, ast.FunctionDef) and x.name == name)
+          general = ast.get_source_segment(s, fn('recognize_general_openai')) or ''
+          ledger = ast.get_source_segment(s, fn('recognize_ledger_openai')) or ''
+          if 'frame.copy()' in general or 'document.copy()' in ledger:
+              raise SystemExit('Fail-open full image fallback detected')
+          if 'cv2.imwrite(' in s:
+              raise SystemExit('Captured image disk-write path detected')
+          migration = ast.get_source_segment(s, fn('_copy_legacy_data_once')) or ''
+          if 'shutil.move' in migration or '.unlink(' in migration or 'rmtree' in migration:
+              raise SystemExit('Destructive migration detected')
+          forbidden = ['PaddleOCR(', 'clova_ocr_crop(', 'paddle_read(']
+          if any(x in s for x in forbidden):
+              raise SystemExit('Legacy OCR runtime present')
+          print('2.2.2 PRIVACY ASSERTIONS PASS')
+          '@ | Set-Content verify_222.py -Encoding utf8
+          python verify_222.py
+
+      - name: Create Windows version info
+        shell: pwsh
+        run: |
+          @'
+          VSVersionInfo(
+            ffi=FixedFileInfo(filevers=(2,2,2,0), prodvers=(2,2,2,0), mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)),
+            kids=[
+              StringFileInfo([StringTable('040904B0', [
+                StringStruct('CompanyName', 'PostalScanner'),
+                StringStruct('FileDescription', 'PostalScanner - 개인정보 최소전송 우편물 자동 인식'),
+                StringStruct('FileVersion', '2.2.2'),
+                StringStruct('InternalName', 'PostalScanner'),
+                StringStruct('OriginalFilename', 'PostalScanner.exe'),
+                StringStruct('ProductName', 'PostalScanner'),
+                StringStruct('ProductVersion', '2.2.2')
+              ])]),
+              VarFileInfo([VarStruct('Translation', [0x0409, 1200])])
+            ]
+          )
+          '@ | Set-Content version_info.txt -Encoding utf8
+
+      - name: Build PostalScanner
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --noupx `
+            --name PostalScanner `
+            --version-file version_info.txt `
+            --paths src `
+            --exclude-module paddleocr --exclude-module paddlex --exclude-module paddle `
+            --hidden-import pythoncom --hidden-import pywintypes `
+            --hidden-import win32com --hidden-import win32com.client --hidden-import win32crypt `
+            src/PostalScanner.py
+
+      - name: Build safe updater
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --noupx `
+            --name PostalScanner_Updater `
+            --version-file version_info.txt `
+            src/PostalScanner_Updater.py
+          New-Item -ItemType Directory -Force dist/PostalScanner/updater | Out-Null
+          Copy-Item dist/PostalScanner_Updater/* dist/PostalScanner/updater/ -Recurse -Force
+
+      - name: Add privacy deployment notes
+        shell: pwsh
+        run: |
+          @'
+          PostalScanner 2.2.2 PRIVACY STABLE
+
+          PRIVACY HARDENING
+          - Privacy mode is mandatory.
+          - General mail sends only a recipient-centered crop; top sender/return area is excluded.
+          - Seal ledger sends only the lower work-entry band.
+          - If privacy crop generation fails, the OpenAI request is blocked. No full-frame fallback.
+          - Captured images are not written to disk by PostalScanner.
+          - Responses requests set store=false.
+          - API Key remains Windows-DPAPI protected.
+          - Work data remains under LocalAppData, separate from replaceable program files.
+
+          NOTE
+          store=false is not the same as OpenAI Zero Data Retention. ZDR must be approved/configured for the API organization/project separately.
+
+          FIRST DEPLOYMENT
+          Use a new folder. Do not overwrite/delete the 2.1.5 folder.
+          Stable auto-update manifest remains on 2.1.5 until the first-transition bridge is separately validated.
+          '@ | Set-Content dist/PostalScanner/RELEASE_NOTES.txt -Encoding utf8
+
+      - name: Base package validation
+        shell: pwsh
+        run: |
+          $required = @(
+            "dist/PostalScanner/PostalScanner.exe",
+            "dist/PostalScanner/_internal",
+            "dist/PostalScanner/updater/PostalScanner_Updater.exe"
+          )
+          foreach ($item in $required) {
+            if (-not (Test-Path $item)) { throw "Missing package item: $item" }
+          }
+          if ((Get-Item "dist/PostalScanner/PostalScanner.exe").Length -lt 100KB) { throw "PostalScanner.exe too small" }
+          if ((Get-Item "dist/PostalScanner/updater/PostalScanner_Updater.exe").Length -lt 100KB) { throw "Updater too small" }
+
+      - name: Create 2.2.2 base ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/PostalScanner -DestinationPath PostalScanner_2.2.2_PRIVACY_BASE.zip -CompressionLevel Optimal -Force
+          Get-FileHash PostalScanner_2.2.2_PRIVACY_BASE.zip -Algorithm SHA256 | Format-List
+
+      - name: Upload 2.2.2 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PostalScanner_2.2.2_PRIVACY_BASE
+          path: PostalScanner_2.2.2_PRIVACY_BASE.zip
+          retention-days: 14
