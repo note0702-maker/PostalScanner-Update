@@ -1,0 +1,191 @@
+name: PostalScanner 2.2.1 Work Build
+
+on:
+  push:
+    branches:
+      - dev/2.2.1-work
+    paths:
+      - ".github/workflows/build_221_work.yml"
+      - "dev/patch_221.py"
+      - "source_final/**"
+      - "src/postal_rules.py"
+      - "src/PostalScanner_Updater.py"
+      - "tests/test_rules.py"
+      - "tests/test_updater.py"
+      - "tests/test_221_source_contract.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  production-build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pyinstaller pywin32 opencv-python numpy pillow
+
+      - name: Reconstruct 2.2.0 final source
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem "source_final/PostalScanner.py.gz.b64.part*" | Sort-Object Name
+          if ($parts.Count -ne 4) { throw "Expected 4 final source parts, found $($parts.Count)" }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ""
+          [IO.File]::WriteAllBytes("PostalScanner.final.py.gz", [Convert]::FromBase64String($b64))
+          python -c "import gzip, pathlib; pathlib.Path('src/PostalScanner.py').write_bytes(gzip.decompress(pathlib.Path('PostalScanner.final.py.gz').read_bytes()))"
+
+      - name: Apply 2.2.1 production data safety patch
+        shell: pwsh
+        run: |
+          python dev/patch_221.py
+
+      - name: Static compile
+        shell: pwsh
+        run: |
+          python -m py_compile src/PostalScanner.py src/postal_rules.py src/PostalScanner_Updater.py
+
+      - name: Automated tests
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "."
+          python -m pytest -q tests/test_rules.py tests/test_updater.py tests/test_221_source_contract.py
+
+      - name: Production feature assertions
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+          import ast
+          s = Path("src/PostalScanner.py").read_text(encoding="utf-8")
+          required = [
+              'APP_VERSION = "2.2.1"',
+              'LOCALAPPDATA',
+              'PERSISTENT_ROOT',
+              'DATA_DIR = PERSISTENT_ROOT / "data"',
+              'duplicate_calls_avoided',
+              'estimated_cost_usd',
+              'def open_management(self):',
+              'def undo_last_excel_entry(',
+              'def ensure_original_excel_seed(',
+              'openai_diagnostic_check',
+          ]
+          missing = [x for x in required if x not in s]
+          if missing:
+              raise SystemExit("Missing production features: " + repr(missing))
+          tree = ast.parse(s)
+          fn = next(x for x in tree.body if isinstance(x, ast.FunctionDef) and x.name == 'migrate_legacy_data_layout')
+          seg = ast.get_source_segment(s, fn) or ''
+          if 'shutil.move' in seg or '.unlink(' in seg or 'rmtree' in seg:
+              raise SystemExit('Destructive legacy migration operation detected')
+          if 'shutil.copytree' not in seg or 'shutil.copy2' not in seg:
+              raise SystemExit('Copy-only migration helpers missing')
+          forbidden = ['PaddleOCR(', 'clova_ocr_crop(', 'paddle_read(']
+          present = [x for x in forbidden if x in s]
+          if present:
+              raise SystemExit("Legacy OCR runtime still present: " + repr(present))
+          print("2.2.1 PRODUCTION ASSERTIONS PASS")
+          '@ | Set-Content verify_221.py -Encoding utf8
+          python verify_221.py
+
+      - name: Create Windows version info
+        shell: pwsh
+        run: |
+          @'
+          VSVersionInfo(
+            ffi=FixedFileInfo(filevers=(2,2,1,0), prodvers=(2,2,1,0), mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)),
+            kids=[
+              StringFileInfo([StringTable('040904B0', [
+                StringStruct('CompanyName', 'PostalScanner'),
+                StringStruct('FileDescription', 'PostalScanner - 우편물 자동 인식'),
+                StringStruct('FileVersion', '2.2.1'),
+                StringStruct('InternalName', 'PostalScanner'),
+                StringStruct('OriginalFilename', 'PostalScanner.exe'),
+                StringStruct('ProductName', 'PostalScanner'),
+                StringStruct('ProductVersion', '2.2.1')
+              ])]),
+              VarFileInfo([VarStruct('Translation', [0x0409, 1200])])
+            ]
+          )
+          '@ | Set-Content version_info.txt -Encoding utf8
+
+      - name: Build PostalScanner
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --noupx `
+            --name PostalScanner `
+            --version-file version_info.txt `
+            --paths src `
+            --exclude-module paddleocr --exclude-module paddlex --exclude-module paddle `
+            --hidden-import pythoncom --hidden-import pywintypes `
+            --hidden-import win32com --hidden-import win32com.client --hidden-import win32crypt `
+            src/PostalScanner.py
+
+      - name: Build safe updater
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --noupx `
+            --name PostalScanner_Updater `
+            --version-file version_info.txt `
+            src/PostalScanner_Updater.py
+          New-Item -ItemType Directory -Force dist/PostalScanner/updater | Out-Null
+          Copy-Item dist/PostalScanner_Updater/* dist/PostalScanner/updater/ -Recurse -Force
+
+      - name: Add work deployment notes
+        shell: pwsh
+        run: |
+          @'
+          PostalScanner 2.2.1 WORK STABLE
+
+          - OpenAI-only recognition
+          - preserved general-mail / seal-ledger business rules
+          - duplicate API-call prevention and fallback minimization
+          - LocalAppData persistent work-data storage
+          - legacy migration is COPY ONLY; source data is never moved/deleted
+          - Excel write verification, rollback and merged-cell-safe undo
+          - original Excel template self-heal support
+          - Management/System Health UI
+          - staged safe updater with SHA/PID/rollback safeguards
+
+          FIRST DEPLOYMENT
+          Use a new folder. Do not overwrite or delete the 2.1.5 folder.
+          Stable auto-update manifest remains on 2.1.5 until first-transition bridge is separately validated.
+          '@ | Set-Content dist/PostalScanner/RELEASE_NOTES.txt -Encoding utf8
+
+      - name: Base package validation
+        shell: pwsh
+        run: |
+          $required = @(
+            "dist/PostalScanner/PostalScanner.exe",
+            "dist/PostalScanner/_internal",
+            "dist/PostalScanner/updater/PostalScanner_Updater.exe"
+          )
+          foreach ($item in $required) {
+            if (-not (Test-Path $item)) { throw "Missing required package item: $item" }
+          }
+          if ((Get-Item "dist/PostalScanner/PostalScanner.exe").Length -lt 100KB) { throw "PostalScanner.exe is unexpectedly small" }
+          if ((Get-Item "dist/PostalScanner/updater/PostalScanner_Updater.exe").Length -lt 100KB) { throw "Updater executable is unexpectedly small" }
+
+      - name: Create 2.2.1 ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/PostalScanner -DestinationPath PostalScanner_2.2.1_WORK_BASE.zip -CompressionLevel Optimal -Force
+          Get-FileHash PostalScanner_2.2.1_WORK_BASE.zip -Algorithm SHA256 | Format-List
+
+      - name: Upload 2.2.1 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PostalScanner_2.2.1_WORK_BASE
+          path: PostalScanner_2.2.1_WORK_BASE.zip
+          retention-days: 14
