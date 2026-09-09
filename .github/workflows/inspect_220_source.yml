@@ -35,7 +35,9 @@ jobs:
               if isinstance(node,ast.FunctionDef):
                   seg=ast.get_source_segment(s,node) or ''
                   low=node.name.lower()
-                  if any(k in low for k in ('legacy','migr','import','data')) or 'shutil.move' in seg or 'shutil.copytree' in seg:
+                  if node.name in {'get_persistent_root','_copy_legacy_data_once'}:
+                      print('\nSOURCE',node.name,'\n'+seg+'\nENDSOURCE\n')
+                  elif any(k in low for k in ('legacy','migr','import','data')) or 'shutil.move' in seg or 'shutil.copytree' in seg:
                       print('FUNC',node.lineno,node.name,'move=', 'shutil.move' in seg,'copytree=', 'shutil.copytree' in seg,'copy2=', 'shutil.copy2' in seg)
           print('SHUTIL_MOVE_COUNT',s.count('shutil.move('))
           print('SHUTIL_COPYTREE_COUNT',s.count('shutil.copytree('))
