@@ -1,0 +1,45 @@
+name: Inspect Privacy Source
+
+on:
+  push:
+    branches: [dev/2.2.2-privacy]
+    paths: [".github/workflows/inspect_privacy_source.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconstruct 2.2.1 and inspect
+        shell: bash
+        run: |
+          cat source_final/PostalScanner.py.gz.b64.part* | tr -d '\r\n' | base64 -d > /tmp/ps.gz
+          gzip -dc /tmp/ps.gz > src/PostalScanner.py
+          python dev/patch_221.py
+          python - <<'PY'
+          from pathlib import Path
+          import ast
+          s=Path('src/PostalScanner.py').read_text(encoding='utf-8')
+          t=ast.parse(s)
+          keys=('openai','jpeg','image','scan','capture','recogn','frame','ledger','camera','process')
+          for node in t.body:
+              if isinstance(node, ast.FunctionDef) and any(k in node.name.lower() for k in keys):
+                  print('TOP',node.lineno,node.name)
+              if isinstance(node, ast.ClassDef):
+                  for c in node.body:
+                      if isinstance(c, ast.FunctionDef) and any(k in c.name.lower() for k in keys):
+                          print('METHOD',c.lineno,c.name)
+          print('--- CALL SITES ---')
+          for needle in ('_jpeg_data_url(', 'image_url', 'input_image', 'OPENAI_', 'urlopen(request'):
+              print('\nNEEDLE',needle)
+              start=0
+              while True:
+                  i=s.find(needle,start)
+                  if i<0: break
+                  line=s.count('\n',0,i)+1
+                  print(line, s[i:i+220].replace('\n',' '))
+                  start=i+1
+          PY
