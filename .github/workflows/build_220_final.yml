@@ -1,0 +1,180 @@
+name: PostalScanner 2.2.0 Final Candidate
+
+on:
+  push:
+    branches:
+      - dev/2.2.0-final
+    paths:
+      - ".github/workflows/build_220_final.yml"
+      - "source_final/**"
+      - "src/postal_rules.py"
+      - "src/PostalScanner_Updater.py"
+      - "tests/test_rules.py"
+      - "tests/test_updater.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  final-build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pyinstaller pywin32 opencv-python numpy pillow
+
+      - name: Reconstruct final PostalScanner source
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem "source_final/PostalScanner.py.gz.b64.part*" | Sort-Object Name
+          if ($parts.Count -ne 4) { throw "Expected 4 final source parts, found $($parts.Count)" }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ""
+          [IO.File]::WriteAllBytes("PostalScanner.final.py.gz", [Convert]::FromBase64String($b64))
+          python -c "import gzip, pathlib; pathlib.Path('src/PostalScanner.py').write_bytes(gzip.decompress(pathlib.Path('PostalScanner.final.py.gz').read_bytes()))"
+
+      - name: Static compile
+        shell: pwsh
+        run: |
+          python -m py_compile src/PostalScanner.py src/postal_rules.py src/PostalScanner_Updater.py
+
+      - name: Automated tests
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "."
+          python -m pytest -q tests/test_rules.py tests/test_updater.py
+
+      - name: Final feature assertions
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+          s = Path("src/PostalScanner.py").read_text(encoding="utf-8")
+          required = [
+              'APP_VERSION = "2.2.0"',
+              'LOCALAPPDATA',
+              'PERSISTENT_ROOT',
+              'duplicate_calls_avoided',
+              'estimated_cost_usd',
+              'def open_management(self):',
+              'def undo_last_excel_entry(',
+              'def ensure_original_excel_seed(',
+              'openai_diagnostic_check',
+              'updater_dir = BASE_DIR / "updater"',
+          ]
+          missing = [x for x in required if x not in s]
+          if missing:
+              raise SystemExit("Missing final features: " + repr(missing))
+          forbidden = ['PaddleOCR(', 'clova_ocr_crop(', 'paddle_read(']
+          present = [x for x in forbidden if x in s]
+          if present:
+              raise SystemExit("Legacy OCR runtime still present: " + repr(present))
+          print("FINAL FEATURE ASSERTIONS PASS")
+          '@ | Set-Content verify_final.py -Encoding utf8
+          python verify_final.py
+
+      - name: Create Windows version info
+        shell: pwsh
+        run: |
+          @'
+          VSVersionInfo(
+            ffi=FixedFileInfo(filevers=(2,2,0,0), prodvers=(2,2,0,0), mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)),
+            kids=[
+              StringFileInfo([StringTable('040904B0', [
+                StringStruct('CompanyName', 'PostalScanner'),
+                StringStruct('FileDescription', 'PostalScanner - 우편물 자동 인식'),
+                StringStruct('FileVersion', '2.2.0'),
+                StringStruct('InternalName', 'PostalScanner'),
+                StringStruct('OriginalFilename', 'PostalScanner.exe'),
+                StringStruct('ProductName', 'PostalScanner'),
+                StringStruct('ProductVersion', '2.2.0')
+              ])]),
+              VarFileInfo([VarStruct('Translation', [0x0409, 1200])])
+            ]
+          )
+          '@ | Set-Content version_info.txt -Encoding utf8
+
+      - name: Build PostalScanner
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --noupx `
+            --name PostalScanner `
+            --version-file version_info.txt `
+            --paths src `
+            --exclude-module paddleocr --exclude-module paddlex --exclude-module paddle `
+            --hidden-import pythoncom --hidden-import pywintypes `
+            --hidden-import win32com --hidden-import win32com.client --hidden-import win32crypt `
+            src/PostalScanner.py
+
+      - name: Build safe updater
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --noupx `
+            --name PostalScanner_Updater `
+            --version-file version_info.txt `
+            src/PostalScanner_Updater.py
+          New-Item -ItemType Directory -Force dist/PostalScanner/updater | Out-Null
+          Copy-Item dist/PostalScanner_Updater/* dist/PostalScanner/updater/ -Recurse -Force
+
+      - name: Add final package notes
+        shell: pwsh
+        run: |
+          @'
+          PostalScanner 2.2.0 FINAL CANDIDATE
+
+          - OpenAI-only active OCR
+          - general mail / seal-ledger business rules preserved
+          - duplicate OpenAI-call prevention and fallback minimization
+          - API usage / token / estimated-cost statistics
+          - persistent data separated under LocalAppData
+          - Excel write verification, rollback and merged-cell-safe undo
+          - Excel original self-heal when bundled resource exists
+          - unified Management / System Health UI
+          - external staged safe updater with SHA/PID/rollback safeguards
+
+          IMPORTANT
+          This candidate does not change the stable update manifest.
+          Authenticode code signing is not included because no signing certificate is configured.
+          '@ | Set-Content dist/PostalScanner/RELEASE_NOTES.txt -Encoding utf8
+
+      - name: Base package validation
+        shell: pwsh
+        run: |
+          $required = @(
+            "dist/PostalScanner/PostalScanner.exe",
+            "dist/PostalScanner/_internal",
+            "dist/PostalScanner/updater/PostalScanner_Updater.exe"
+          )
+          foreach ($item in $required) {
+            if (-not (Test-Path $item)) { throw "Missing required package item: $item" }
+          }
+          if ((Get-Item "dist/PostalScanner/PostalScanner.exe").Length -lt 100KB) {
+            throw "PostalScanner.exe is unexpectedly small"
+          }
+          if ((Get-Item "dist/PostalScanner/updater/PostalScanner_Updater.exe").Length -lt 100KB) {
+            throw "Updater executable is unexpectedly small"
+          }
+
+      - name: Create final candidate ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/PostalScanner -DestinationPath PostalScanner_2.2.0_FINAL_BASE.zip -CompressionLevel Optimal -Force
+          Get-FileHash PostalScanner_2.2.0_FINAL_BASE.zip -Algorithm SHA256 | Format-List
+
+      - name: Upload final candidate
+        uses: actions/upload-artifact@v4
+        with:
+          name: PostalScanner_2.2.0_FINAL_BASE
+          path: PostalScanner_2.2.0_FINAL_BASE.zip
+          retention-days: 14
