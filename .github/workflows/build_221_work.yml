@@ -72,7 +72,7 @@ jobs:
           required = [
               'APP_VERSION = "2.2.1"',
               'LOCALAPPDATA',
-              'PERSISTENT_ROOT',
+              'PERSISTENT_ROOT = get_persistent_root()',
               'DATA_DIR = PERSISTENT_ROOT / "data"',
               'duplicate_calls_avoided',
               'estimated_cost_usd',
@@ -85,12 +85,12 @@ jobs:
           if missing:
               raise SystemExit("Missing production features: " + repr(missing))
           tree = ast.parse(s)
-          fn = next(x for x in tree.body if isinstance(x, ast.FunctionDef) and x.name == 'migrate_legacy_data_layout')
+          fn = next(x for x in tree.body if isinstance(x, ast.FunctionDef) and x.name == '_copy_legacy_data_once')
           seg = ast.get_source_segment(s, fn) or ''
           if 'shutil.move' in seg or '.unlink(' in seg or 'rmtree' in seg:
               raise SystemExit('Destructive legacy migration operation detected')
-          if 'shutil.copytree' not in seg or 'shutil.copy2' not in seg:
-              raise SystemExit('Copy-only migration helpers missing')
+          if 'shutil.copytree' not in seg or 'dirs_exist_ok=True' not in seg or 'shutil.copy2' not in seg:
+              raise SystemExit('Copy-only merge migration helpers missing')
           forbidden = ['PaddleOCR(', 'clova_ocr_crop(', 'paddle_read(']
           present = [x for x in forbidden if x in s]
           if present:
@@ -151,8 +151,8 @@ jobs:
           - OpenAI-only recognition
           - preserved general-mail / seal-ledger business rules
           - duplicate API-call prevention and fallback minimization
-          - LocalAppData persistent work-data storage
-          - legacy migration is COPY ONLY; source data is never moved/deleted
+          - persistent work-data at %LOCALAPPDATA%/PostalScanner/data
+          - legacy migration is COPY ONLY and merges safely; source data is never moved/deleted
           - Excel write verification, rollback and merged-cell-safe undo
           - original Excel template self-heal support
           - Management/System Health UI
