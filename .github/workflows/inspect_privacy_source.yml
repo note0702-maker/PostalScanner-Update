@@ -24,15 +24,13 @@ jobs:
           import ast
           s=Path('src/PostalScanner.py').read_text(encoding='utf-8')
           t=ast.parse(s)
-          top_names={'_privacy_assert_external_image','_resize_for_openai','_jpeg_data_url','_call_openai_vision','recognize_general_openai','recognize_ledger_openai','scan_rect','api_capture_quality_check'}
-          method_names={'capture_best_frame','start_scan','scan_worker','update_camera','process_ui_queue'}
+          wanted={'get_general_roi','_quality_roi','rectify_document','detect_document_corners','scan_rect'}
           for node in t.body:
-              if isinstance(node, ast.FunctionDef) and node.name in top_names:
-                  print('\n### TOP',node.name,'###\n')
+              if isinstance(node,(ast.Assign,ast.AnnAssign)):
+                  seg=ast.get_source_segment(s,node) or ''
+                  if 'PRIVACY_' in seg:
+                      print('CONST',seg)
+              if isinstance(node,ast.FunctionDef) and node.name in wanted:
+                  print('\n###',node.name,'###\n')
                   print(ast.get_source_segment(s,node))
-              if isinstance(node, ast.ClassDef):
-                  for c in node.body:
-                      if isinstance(c, ast.FunctionDef) and c.name in method_names:
-                          print('\n### METHOD',c.name,'###\n')
-                          print(ast.get_source_segment(s,c))
           PY
