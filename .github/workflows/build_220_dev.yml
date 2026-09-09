@@ -1,0 +1,117 @@
+name: PostalScanner 2.2.0 Dev Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install test/build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pyinstaller pywin32 opencv-python numpy pillow
+
+      - name: Reconstruct 2.1.2 baseline source
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force src | Out-Null
+          $parts = Get-ChildItem "source/PostalScanner.py.gz.b64.part*" | Sort-Object Name
+          if ($parts.Count -ne 5) { throw "Expected 5 source parts, found $($parts.Count)" }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ""
+          [IO.File]::WriteAllBytes("PostalScanner.py.gz", [Convert]::FromBase64String($b64))
+          python -c "import gzip, pathlib; pathlib.Path('src/PostalScanner.py').write_bytes(gzip.decompress(pathlib.Path('PostalScanner.py.gz').read_bytes()))"
+
+      - name: Apply 2.2.0 cleanup patches
+        shell: pwsh
+        run: |
+          python dev/patch_main.py
+          python dev/patch_cleanup.py
+          python dev/patch_data.py
+
+      - name: Restore original Excel resource
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force resources | Out-Null
+          $parts = Get-ChildItem "resources/original_template.xlsx.b64.part*" | Sort-Object Name
+          if ($parts.Count -ne 4) { throw "Expected 4 template parts, found $($parts.Count)" }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ""
+          [IO.File]::WriteAllBytes("resources/original_template.xlsx", [Convert]::FromBase64String($b64))
+
+      - name: Static compile
+        shell: pwsh
+        run: |
+          python -m py_compile src/PostalScanner.py src/postal_rules.py src/PostalScanner_Updater.py
+
+      - name: Business rule tests
+        shell: pwsh
+        run: |
+          python -m pytest -q tests
+
+      - name: Build PostalScanner app
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --noupx `
+            --name PostalScanner `
+            --paths src `
+            --hidden-import pythoncom --hidden-import pywintypes `
+            --hidden-import win32com --hidden-import win32com.client --hidden-import win32crypt `
+            src/PostalScanner.py
+          New-Item -ItemType Directory -Force dist/PostalScanner/resources | Out-Null
+          Copy-Item resources/original_template.xlsx dist/PostalScanner/resources/original_template.xlsx -Force
+
+      - name: Build safe updater as onedir
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --noupx `
+            --name PostalScanner_Updater `
+            src/PostalScanner_Updater.py
+          New-Item -ItemType Directory -Force dist/PostalScanner/updater | Out-Null
+          Copy-Item dist/PostalScanner_Updater/* dist/PostalScanner/updater/ -Recurse -Force
+
+      - name: Add dev release notes
+        shell: pwsh
+        run: |
+          Copy-Item RELEASE_NOTES_2.2.0_DEV.txt dist/PostalScanner/RELEASE_NOTES.txt -Force
+
+      - name: Package validation
+        shell: pwsh
+        run: |
+          $required = @(
+            "dist/PostalScanner/PostalScanner.exe",
+            "dist/PostalScanner/_internal",
+            "dist/PostalScanner/updater/PostalScanner_Updater.exe",
+            "dist/PostalScanner/resources/original_template.xlsx"
+          )
+          foreach ($item in $required) {
+            if (-not (Test-Path $item)) { throw "Missing required package item: $item" }
+          }
+          if ((Get-Item "dist/PostalScanner/PostalScanner.exe").Length -lt 100KB) {
+            throw "PostalScanner.exe is unexpectedly small"
+          }
+
+      - name: Create dev ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/PostalScanner -DestinationPath PostalScanner_2.2.0_DEV.zip -CompressionLevel Optimal -Force
+          Get-FileHash PostalScanner_2.2.0_DEV.zip -Algorithm SHA256 | Format-List
+
+      - name: Upload dev artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PostalScanner_2.2.0_DEV
+          path: PostalScanner_2.2.0_DEV.zip
+          retention-days: 14
