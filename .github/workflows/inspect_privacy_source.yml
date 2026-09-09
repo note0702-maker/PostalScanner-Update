@@ -24,22 +24,15 @@ jobs:
           import ast
           s=Path('src/PostalScanner.py').read_text(encoding='utf-8')
           t=ast.parse(s)
-          keys=('openai','jpeg','image','scan','capture','recogn','frame','ledger','camera','process')
+          top_names={'_privacy_assert_external_image','_resize_for_openai','_jpeg_data_url','_call_openai_vision','recognize_general_openai','recognize_ledger_openai','scan_rect','api_capture_quality_check'}
+          method_names={'capture_best_frame','start_scan','scan_worker','update_camera','process_ui_queue'}
           for node in t.body:
-              if isinstance(node, ast.FunctionDef) and any(k in node.name.lower() for k in keys):
-                  print('TOP',node.lineno,node.name)
+              if isinstance(node, ast.FunctionDef) and node.name in top_names:
+                  print('\n### TOP',node.name,'###\n')
+                  print(ast.get_source_segment(s,node))
               if isinstance(node, ast.ClassDef):
                   for c in node.body:
-                      if isinstance(c, ast.FunctionDef) and any(k in c.name.lower() for k in keys):
-                          print('METHOD',c.lineno,c.name)
-          print('--- CALL SITES ---')
-          for needle in ('_jpeg_data_url(', 'image_url', 'input_image', 'OPENAI_', 'urlopen(request'):
-              print('\nNEEDLE',needle)
-              start=0
-              while True:
-                  i=s.find(needle,start)
-                  if i<0: break
-                  line=s.count('\n',0,i)+1
-                  print(line, s[i:i+220].replace('\n',' '))
-                  start=i+1
+                      if isinstance(c, ast.FunctionDef) and c.name in method_names:
+                          print('\n### METHOD',c.name,'###\n')
+                          print(ast.get_source_segment(s,c))
           PY
