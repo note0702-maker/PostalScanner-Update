@@ -172,7 +172,7 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             gh release upload $tag $zip --clobber
           } else {
-            gh release create $tag $zip --target "${{ github.sha }}" --title "PostalScanner 2.1.5" --notes "Updater progress window with download percentage, size and install stages"
+            gh release create $tag $zip --target main --title "PostalScanner 2.1.5" --notes "Updater progress window with download percentage, size and install stages"
           }
 
       - name: Publish manifest
