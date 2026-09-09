@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""PostalScanner 업무 판독 규칙.
+"""PostalScanner 2.2.0 업무 판독 규칙.
 
-OCR/AI 엔진과 분리해서 보존하는 규칙만 둔다.
-개인정보/실제 주소 데이터는 저장하지 않는다.
+OCR/AI 엔진과 분리해 유지해야 하는 업무 규칙만 둔다.
+개인정보/실제 주소/실제 이름을 파일로 저장하지 않는다.
 """
 
 import re
@@ -30,20 +30,6 @@ GENERAL_MAIL_PROMPT = r"""
 9. 설명 없이 지정된 JSON 형식으로만 반환한다.
 """.strip()
 
-LEDGER_PRINTED_TOKENS = {"시", "구", "도", "군", "장"}
-
-LEDGER_IGNORE_TEXTS = {
-    "번호",
-    "우편번호",
-    "수신기관명",
-    "등기번호",
-    "우표첨부란",
-    "인감대장송부",
-    "인감증명법시행령별지제호서식",
-    "특수우편물배달증첨부란",
-    "내가아낀종이한장늘어나는나라살림",
-}
-
 LEDGER_PROMPT = r"""
 고정 양식 '인감대장송부'에서 가장 아래쪽에 실제로 작성된 한 행만 읽어라.
 
@@ -64,7 +50,7 @@ LEDGER_PROMPT = r"""
 
 
 def filter_general_english(text):
-    """사용자 요구: 일반우편 결과의 영문은 K/T만 보존."""
+    """일반우편 결과의 영문은 K/T만 보존한다."""
     out = []
     for ch in str(text or ""):
         if ("A" <= ch <= "Z") or ("a" <= ch <= "z"):
@@ -73,7 +59,6 @@ def filter_general_english(text):
                 out.append(upper)
             continue
         out.append(ch)
-
     value = "".join(out)
     value = re.sub(r"\s+", " ", value).strip()
     value = re.sub(r"\(\s+", "(", value)
@@ -90,10 +75,12 @@ def normalize_general_result(address, name):
 
 
 def general_address_has_structure(address):
-    """도/광역시가 생략된 주소도 허용하는 공통 최종 검증."""
+    """도/광역시가 생략된 주소도 허용하는 최종 구조 검사."""
     value = str(address or "").strip()
     if not value:
         return False
+    if re.search(r"[가-힣]{2,12}(?:특별시|광역시|특별자치시|특별자치도|도)", value):
+        return True
     admin_hits = re.findall(r"[가-힣]{1,12}(?:시|군|구|읍|면|동|리|로|길)", value)
     if len(admin_hits) >= 2:
         return True
@@ -104,6 +91,85 @@ def general_address_has_structure(address):
     return False
 
 
+def general_name_is_plausible(name):
+    value = str(name or "").strip()
+    if not value:
+        return False
+    return bool(re.fullmatch(r"[가-힣]{2,10}", value))
+
+
 def ledger_name_is_plausible(name):
     value = str(name or "").strip()
     return bool(re.fullmatch(r"[가-힣]{2,8}", value))
+
+
+def general_result_needs_retry(result):
+    address = str(result.get("address", "") or "").strip()
+    name = str(result.get("name", "") or "").strip()
+    try:
+        ac = float(result.get("address_confidence", 0.0) or 0.0)
+        nc = float(result.get("name_confidence", 0.0) or 0.0)
+    except Exception:
+        return True
+    if not address or not name:
+        return True
+    if len(address) < 7 or not general_address_has_structure(address):
+        return True
+    if not general_name_is_plausible(name):
+        return True
+    return ac < 0.78 or nc < 0.78
+
+
+def ledger_result_needs_retry(result):
+    address = str(result.get("institution", "") or "").strip()
+    name = str(result.get("name", "") or "").strip()
+    try:
+        conf = float(result.get("institution_confidence", 0.0) or 0.0)
+    except Exception:
+        return True
+    if not address or not name:
+        return True
+    if len(address) < 5 or not re.search(r"(도|시|군|구|읍|면|동|장)", address):
+        return True
+    if re.search(r"(시시|구구|군군|구시군)", address):
+        return True
+    if not ledger_name_is_plausible(name):
+        return True
+    return conf < 0.80
+
+
+# 2026-09 공식 OpenAI 모델 페이지 기준. 화면에는 '추정 비용'으로만 표시한다.
+# 단위: USD / 1,000,000 tokens
+_MODEL_PRICE_USD_PER_MTOK = {
+    "gpt-5.6-luna": (0.20, 1.20),
+    "gpt-5.6-terra": (2.00, 12.00),
+    "gpt-5.6-sol": (4.00, 20.00),
+    "gpt-5.6": (4.00, 20.00),
+}
+
+
+def estimate_openai_cost_usd(model, input_tokens, output_tokens):
+    price = _MODEL_PRICE_USD_PER_MTOK.get(str(model or "").strip())
+    if not price:
+        return 0.0
+    in_price, out_price = price
+    return (
+        max(0, int(input_tokens or 0)) * in_price
+        + max(0, int(output_tokens or 0)) * out_price
+    ) / 1_000_000.0
+
+
+def normalize_ledger_address(text):
+    """인감대장 주소의 확정적인 형태 오류만 보정한다."""
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
+    value = re.sub(r"([가-힣]{1,10})(?:육|욕|읖|읏)장\b", r"\1읍장", value)
+    value = re.sub(r"(시)\s*\1+", r"\1", value)
+    value = re.sub(r"(구)\s*\1+", r"\1", value)
+    value = re.sub(r"(군)\s*\1+", r"\1", value)
+    value = re.sub(r"(읍장|면장|동장)\s*\1+", r"\1", value)
+    tokens = value.split()
+    final = []
+    for token in tokens:
+        if token not in final:
+            final.append(token)
+    return " ".join(final)
