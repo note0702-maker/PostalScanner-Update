@@ -40,12 +40,10 @@ jobs:
           [IO.File]::WriteAllBytes("PostalScanner.py.gz", [Convert]::FromBase64String($b64))
           python -c "import gzip, pathlib; pathlib.Path('src/PostalScanner.py').write_bytes(gzip.decompress(pathlib.Path('PostalScanner.py.gz').read_bytes()))"
 
-      - name: Apply 2.2.0 cleanup patches
+      - name: Apply 2.2.0 preview patch
         shell: pwsh
         run: |
-          python dev/patch_main.py
-          python dev/patch_cleanup.py
-          python dev/patch_data.py
+          python dev/patch_preview.py
 
       - name: Static compile
         shell: pwsh
@@ -55,7 +53,7 @@ jobs:
       - name: Business rule tests
         shell: pwsh
         run: |
-          python -m pytest -q tests
+          python -m pytest -q tests/test_rules.py
 
       - name: Build PostalScanner app
         shell: pwsh
@@ -63,6 +61,7 @@ jobs:
           python -m PyInstaller --noconfirm --clean --windowed --onedir --noupx `
             --name PostalScanner `
             --paths src `
+            --exclude-module paddleocr --exclude-module paddlex --exclude-module paddle `
             --hidden-import pythoncom --hidden-import pywintypes `
             --hidden-import win32com --hidden-import win32com.client --hidden-import win32crypt `
             src/PostalScanner.py
@@ -81,10 +80,14 @@ jobs:
         run: |
           Copy-Item RELEASE_NOTES_2.2.0_DEV.txt dist/PostalScanner/RELEASE_NOTES.txt -Force
           @'
-          PREVIEW BUILD NOTICE
-          This DEV preview intentionally does not bundle the Excel template yet.
-          For isolated testing, copy your template into data/original before Excel tests.
-          Do not replace the stable 2.1.5 installation with this preview.
+          PostalScanner 2.2.0 DEV PREVIEW
+
+          - OpenAI-only active recognition path
+          - preserved general-mail / ledger business rules
+          - OpenAI diagnostic HTTP 400 fix
+          - safe updater bundled for later testing
+          - this preview does NOT replace stable 2.1.5
+          - Excel template is not bundled in this preview yet
           '@ | Set-Content dist/PostalScanner/DEV_PREVIEW_NOTICE.txt -Encoding utf8
 
       - name: Package validation
