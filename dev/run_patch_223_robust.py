@@ -47,7 +47,9 @@ lines_for_write.insert(
 s = '\n'.join(lines_for_write) + '\n'
 '''
 
-new_code, count = pattern.subn(replacement, code, count=1)
+# Use a callable replacement so re.sub does not reinterpret backslashes in
+# the embedded Python source (notably the literal "\\n" joins above).
+new_code, count = pattern.subn(lambda _m: replacement, code, count=1)
 if count != 1:
     raise SystemExit('could not harden Excel insertion block in 2.2.3 patch')
 
