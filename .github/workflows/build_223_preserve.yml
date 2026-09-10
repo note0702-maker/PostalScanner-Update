@@ -57,6 +57,23 @@ jobs:
         shell: pwsh
         run: python dev/patch_222_privacy.py
 
+      - name: Normalize ledger prompt anchor
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+          p = Path('src/PostalScanner.py')
+          s = p.read_text(encoding='utf-8')
+          if 'OPENAI_LEDGER_PROMPT = r"""' not in s:
+              s2 = s.replace('OPENAI_LEDGER_PROMPT = """', 'OPENAI_LEDGER_PROMPT = r"""', 1)
+              if s2 == s:
+                  raise SystemExit('ledger prompt assignment not found')
+              s = s2
+          p.write_text(s, encoding='utf-8')
+          print('ledger prompt anchor normalized')
+          '@ | Set-Content normalize_prompt.py -Encoding utf8
+          python normalize_prompt.py
+
       - name: Apply 2.2.3 ledger Excel patch
         shell: pwsh
         run: python dev/patch_223_ledger_excel.py
