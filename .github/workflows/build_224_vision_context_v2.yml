@@ -1,0 +1,105 @@
+name: PostalScanner 2.2.4 Vision Context Build v2
+
+on:
+  push:
+    branches: [dev/2.2.4-ledger-vision-context]
+    paths:
+      - ".github/workflows/build_224_vision_context_v2.yml"
+      - "dev/patch_224_ledger_vision_context.py"
+      - "tests/test_224_vision_context_contract.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Dependencies
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install --upgrade pip
+          python -m pip install pytest pyinstaller pywin32 opencv-python numpy pillow
+
+      - name: Reconstruct preserved source
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $parts = Get-ChildItem "source_final/PostalScanner.py.gz.b64.part*" | Sort-Object Name
+          if ($parts.Count -ne 4) { throw "Expected 4 source parts" }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ""
+          [IO.File]::WriteAllBytes("PostalScanner.final.py.gz", [Convert]::FromBase64String($b64))
+          python -c "import gzip,pathlib; pathlib.Path('src/PostalScanner.py').write_bytes(gzip.decompress(pathlib.Path('PostalScanner.final.py.gz').read_bytes()))"
+          python dev/patch_221.py
+          python dev/patch_222_privacy.py
+          @'
+          from pathlib import Path
+          import ast
+          p=Path('src/PostalScanner.py'); s=p.read_text(encoding='utf-8'); tree=ast.parse(s)
+          node=None
+          for x in tree.body:
+              if isinstance(x,(ast.Assign,ast.AnnAssign)):
+                  ts=x.targets if isinstance(x,ast.Assign) else [x.target]
+                  if any(isinstance(t,ast.Name) and t.id=='OPENAI_LEDGER_PROMPT' for t in ts): node=x; break
+          if node is None: raise SystemExit('ledger prompt not found')
+          lines=s.splitlines(); lines[node.lineno-1:node.end_lineno]=['OPENAI_LEDGER_PROMPT = r"""temporary ledger prompt anchor"""']
+          p.write_text('\n'.join(lines)+'\n',encoding='utf-8')
+          '@ | Set-Content normalize.py -Encoding utf8
+          python normalize.py
+          python dev/run_patch_223_robust.py
+          python dev/patch_224_ledger_vision_context.py
+
+      - name: Compile and test
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m py_compile src/PostalScanner.py src/postal_rules.py src/PostalScanner_Updater.py
+          $env:PYTHONPATH = "."
+          python -m pytest -q tests/test_rules.py tests/test_updater.py tests/test_224_vision_context_contract.py
+
+      - name: Version info
+        shell: pwsh
+        run: |
+          @'
+          VSVersionInfo(ffi=FixedFileInfo(filevers=(2,2,4,0),prodvers=(2,2,4,0),mask=0x3f,flags=0x0,OS=0x40004,fileType=0x1,subtype=0x0,date=(0,0)),kids=[StringFileInfo([StringTable('040904B0',[StringStruct('CompanyName','PostalScanner'),StringStruct('FileDescription','PostalScanner - 인감대장 문맥형 손글씨 인식'),StringStruct('FileVersion','2.2.4'),StringStruct('InternalName','PostalScanner'),StringStruct('OriginalFilename','PostalScanner.exe'),StringStruct('ProductName','PostalScanner'),StringStruct('ProductVersion','2.2.4')])]),VarFileInfo([VarStruct('Translation',[0x0409,1200])])])
+          '@ | Set-Content version_info.txt -Encoding utf8
+
+      - name: Build EXEs
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --noupx --name PostalScanner --version-file version_info.txt --paths src --exclude-module paddleocr --exclude-module paddlex --exclude-module paddle --hidden-import pythoncom --hidden-import pywintypes --hidden-import win32com --hidden-import win32com.client --hidden-import win32crypt src/PostalScanner.py
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --noupx --name PostalScanner_Updater --version-file version_info.txt src/PostalScanner_Updater.py
+          New-Item -ItemType Directory -Force dist/PostalScanner/updater | Out-Null
+          Copy-Item dist/PostalScanner_Updater/* dist/PostalScanner/updater/ -Recurse -Force
+
+      - name: Package base
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          @'
+          PostalScanner 2.2.4 VISION CONTEXT
+          - General mail recognition unchanged.
+          - Management/Settings UI unchanged.
+          - API key, LocalAppData work data, Excel behavior and updater architecture preserved.
+          - Ledger recognition compares multiple lower rows and selects the bottom-most handwritten row using vision context.
+          - Printed 시/도/구/시/군/장 labels are treated as anchors.
+          - store=false, no captured-image disk write, no full-frame fallback.
+          '@ | Set-Content dist/PostalScanner/RELEASE_NOTES.txt -Encoding utf8
+          if (-not (Test-Path dist/PostalScanner/PostalScanner.exe)) { throw "main EXE missing" }
+          if (-not (Test-Path dist/PostalScanner/updater/PostalScanner_Updater.exe)) { throw "updater EXE missing" }
+          Compress-Archive -Path dist/PostalScanner -DestinationPath PostalScanner_2.2.4_VISION_CONTEXT_BASE.zip -CompressionLevel Optimal -Force
+          Get-FileHash PostalScanner_2.2.4_VISION_CONTEXT_BASE.zip -Algorithm SHA256 | Format-List
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PostalScanner_2.2.4_VISION_CONTEXT_BASE
+          path: PostalScanner_2.2.4_VISION_CONTEXT_BASE.zip
+          retention-days: 14
