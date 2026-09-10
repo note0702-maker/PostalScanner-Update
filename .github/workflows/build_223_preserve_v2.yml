@@ -1,0 +1,241 @@
+name: PostalScanner 2.2.3 Preserved UI Build v2
+
+on:
+  push:
+    branches:
+      - dev/2.2.3-ledger-excel-preserve
+    paths:
+      - ".github/workflows/build_223_preserve_v2.yml"
+      - "dev/patch_221.py"
+      - "dev/patch_222_privacy.py"
+      - "dev/patch_223_ledger_excel.py"
+      - "source_final/**"
+      - "src/postal_rules.py"
+      - "src/PostalScanner_Updater.py"
+      - "tests/test_rules.py"
+      - "tests/test_updater.py"
+      - "tests/test_222_privacy_contract.py"
+      - "tests/test_223_preservation_contract.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preserved-build-v2:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pyinstaller pywin32 opencv-python numpy pillow
+
+      - name: Reconstruct 2.2.0 final source
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem "source_final/PostalScanner.py.gz.b64.part*" | Sort-Object Name
+          if ($parts.Count -ne 4) { throw "Expected 4 source parts, found $($parts.Count)" }
+          $b64 = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ""
+          [IO.File]::WriteAllBytes("PostalScanner.final.py.gz", [Convert]::FromBase64String($b64))
+          python -c "import gzip, pathlib; pathlib.Path('src/PostalScanner.py').write_bytes(gzip.decompress(pathlib.Path('PostalScanner.final.py.gz').read_bytes()))"
+
+      - name: Apply 2.2.1 persistent-data safety patch
+        shell: pwsh
+        run: python dev/patch_221.py
+
+      - name: Apply 2.2.2 privacy patch
+        shell: pwsh
+        run: python dev/patch_222_privacy.py
+
+      - name: Normalize ledger prompt assignment with AST
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+          import ast
+          p = Path('src/PostalScanner.py')
+          s = p.read_text(encoding='utf-8')
+          tree = ast.parse(s)
+          node = None
+          for x in tree.body:
+              if isinstance(x, (ast.Assign, ast.AnnAssign)):
+                  targets = x.targets if isinstance(x, ast.Assign) else [x.target]
+                  if any(isinstance(t, ast.Name) and t.id == 'OPENAI_LEDGER_PROMPT' for t in targets):
+                      node = x
+                      break
+          if node is None:
+              raise SystemExit('OPENAI_LEDGER_PROMPT assignment not found by AST')
+          lines = s.splitlines()
+          lines[node.lineno - 1:node.end_lineno] = ['OPENAI_LEDGER_PROMPT = r"""temporary ledger prompt anchor"""']
+          p.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          print('ledger prompt assignment normalized by AST')
+          '@ | Set-Content normalize_prompt_ast.py -Encoding utf8
+          python normalize_prompt_ast.py
+
+      - name: Apply 2.2.3 ledger Excel patch
+        shell: pwsh
+        run: python dev/patch_223_ledger_excel.py
+
+      - name: Static compile
+        shell: pwsh
+        run: |
+          python -m py_compile src/PostalScanner.py src/postal_rules.py src/PostalScanner_Updater.py
+
+      - name: Automated tests
+        shell: pwsh
+        run: |
+          $env:PYTHONPATH = "."
+          python -m pytest -q tests/test_rules.py tests/test_updater.py tests/test_222_privacy_contract.py tests/test_223_preservation_contract.py
+
+      - name: Preservation and production assertions
+        shell: pwsh
+        run: |
+          @'
+          from pathlib import Path
+          import ast
+          s = Path("src/PostalScanner.py").read_text(encoding="utf-8")
+          required = [
+              'APP_VERSION = "2.2.3"',
+              'LOCALAPPDATA',
+              'PERSISTENT_ROOT = get_persistent_root()',
+              'DATA_DIR = PERSISTENT_ROOT / "data"',
+              'ORIGINAL_DIR = DATA_DIR / "original"',
+              'OUTPUT_DIR = DATA_DIR / "output"',
+              'AUDIT_DIR = DATA_DIR / "audit"',
+              'OPENAI_SECURE_KEY_FILE = DATA_DIR / "openai_key.dat"',
+              'PRIVACY_MODE = True',
+              'PRIVACY_MAX_EXTERNAL_RATIO_GENERAL = 0.62',
+              'PRIVACY_MAX_EXTERNAL_RATIO_LEDGER = 0.58',
+              '"store": False',
+              'def open_management(self):',
+              'def _build_ledger_focus_image(',
+              'def _apply_postal_excel_display(',
+              'address_range.HorizontalAlignment = -4131',
+              'recipient_cell.ShrinkToFit = True',
+              'duplicate_calls_avoided',
+              'def ensure_original_excel_seed(',
+          ]
+          missing = [x for x in required if x not in s]
+          if missing:
+              raise SystemExit("Missing 2.2.3 preserved features: " + repr(missing))
+          tree = ast.parse(s)
+          fn = lambda name: next(x for x in tree.body if isinstance(x, ast.FunctionDef) and x.name == name)
+          migration = ast.get_source_segment(s, fn('_copy_legacy_data_once')) or ''
+          if 'shutil.move' in migration or '.unlink(' in migration or 'rmtree' in migration:
+              raise SystemExit('Destructive legacy migration detected')
+          ledger = ast.get_source_segment(s, fn('recognize_ledger_openai')) or ''
+          if 'document.copy()' in ledger or 'frame.copy()' in ledger:
+              raise SystemExit('Full image fail-open detected in ledger recognition')
+          if 'cv2.imwrite(' in s:
+              raise SystemExit('Captured image disk-write path detected')
+          print('2.2.3 UI/SETTINGS/DATA PRESERVATION ASSERTIONS PASS')
+          '@ | Set-Content verify_223.py -Encoding utf8
+          python verify_223.py
+
+      - name: Create Windows version info
+        shell: pwsh
+        run: |
+          @'
+          VSVersionInfo(
+            ffi=FixedFileInfo(filevers=(2,2,3,0), prodvers=(2,2,3,0), mask=0x3f, flags=0x0, OS=0x40004, fileType=0x1, subtype=0x0, date=(0,0)),
+            kids=[
+              StringFileInfo([StringTable('040904B0', [
+                StringStruct('CompanyName', 'PostalScanner'),
+                StringStruct('FileDescription', 'PostalScanner - 개인정보보호 인감대장 인식 강화'),
+                StringStruct('FileVersion', '2.2.3'),
+                StringStruct('InternalName', 'PostalScanner'),
+                StringStruct('OriginalFilename', 'PostalScanner.exe'),
+                StringStruct('ProductName', 'PostalScanner'),
+                StringStruct('ProductVersion', '2.2.3')
+              ])]),
+              VarFileInfo([VarStruct('Translation', [0x0409, 1200])])
+            ]
+          )
+          '@ | Set-Content version_info.txt -Encoding utf8
+
+      - name: Build PostalScanner
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --noupx `
+            --name PostalScanner `
+            --version-file version_info.txt `
+            --paths src `
+            --exclude-module paddleocr --exclude-module paddlex --exclude-module paddle `
+            --hidden-import pythoncom --hidden-import pywintypes `
+            --hidden-import win32com --hidden-import win32com.client --hidden-import win32crypt `
+            src/PostalScanner.py
+
+      - name: Build same safe updater
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --noupx `
+            --name PostalScanner_Updater `
+            --version-file version_info.txt `
+            src/PostalScanner_Updater.py
+          New-Item -ItemType Directory -Force dist/PostalScanner/updater | Out-Null
+          Copy-Item dist/PostalScanner_Updater/* dist/PostalScanner/updater/ -Recurse -Force
+
+      - name: Add release notes
+        shell: pwsh
+        run: |
+          @'
+          PostalScanner 2.2.3 PRESERVED UI HOTFIX
+
+          PRESERVED WITHOUT UI/SETTINGS REWORK
+          - The 2.2.2 unified Management/Settings UI is preserved unchanged.
+          - Persistent work data remains at %LOCALAPPDATA%/PostalScanner/data.
+          - Existing API Key DPAPI storage, settings, audit/metrics and update config are preserved.
+          - Safe updater implementation is unchanged.
+
+          CHANGES ONLY
+          - Seal-ledger: fixed-form last-written-row detection + row/institution/name focus image.
+          - Seal-ledger: stronger configured model used for accuracy-first recognition.
+          - Excel: address cell is left-aligned and shrink-to-fit; recipient cell is center + shrink-to-fit.
+          - No cell merge/unmerge and no global template-style changes.
+
+          PRIVACY
+          - store=false remains enabled.
+          - No captured image is written to disk.
+          - No full-frame fallback.
+          - Ledger external image remains under the existing privacy area guard.
+
+          UPDATE NOTE
+          2.2.x -> 2.2.3 can use the safe 2.2.x updater. The legacy 2.1.5 first-transition manifest must NOT be redirected to 2.2.3 until a separate safe bridge exists.
+          '@ | Set-Content dist/PostalScanner/RELEASE_NOTES.txt -Encoding utf8
+
+      - name: Base package validation
+        shell: pwsh
+        run: |
+          $required = @(
+            "dist/PostalScanner/PostalScanner.exe",
+            "dist/PostalScanner/_internal",
+            "dist/PostalScanner/updater/PostalScanner_Updater.exe"
+          )
+          foreach ($item in $required) {
+            if (-not (Test-Path $item)) { throw "Missing package item: $item" }
+          }
+          if ((Get-Item "dist/PostalScanner/PostalScanner.exe").Length -lt 100KB) { throw "PostalScanner.exe too small" }
+          if ((Get-Item "dist/PostalScanner/updater/PostalScanner_Updater.exe").Length -lt 100KB) { throw "Updater too small" }
+
+      - name: Create 2.2.3 base ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/PostalScanner -DestinationPath PostalScanner_2.2.3_PRESERVED_BASE.zip -CompressionLevel Optimal -Force
+          Get-FileHash PostalScanner_2.2.3_PRESERVED_BASE.zip -Algorithm SHA256 | Format-List
+
+      - name: Upload 2.2.3 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PostalScanner_2.2.3_PRESERVED_BASE
+          path: PostalScanner_2.2.3_PRESERVED_BASE.zip
+          retention-days: 14
